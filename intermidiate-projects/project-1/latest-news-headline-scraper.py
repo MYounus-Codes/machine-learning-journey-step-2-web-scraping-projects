@@ -1,38 +1,44 @@
 import csv
-from urllib.parse import urljoin
 
 import requests
-from lxml import html
+from bs4 import BeautifulSoup
 
 
 url = "https://www.bbc.com/news?utm_source=chatgpt.com"
 response = requests.get(url)
-tree = html.fromstring(response.content)
+soup = BeautifulSoup(response.text, "html.parser")
 
 rows = []
 seen_links = set()
 
-for article_link in tree.xpath("//a[contains(@href, '/news/articles/')]"):
-    href = article_link.get("href")
+news_tags = soup.find_all("span", attrs={"data-testid": "card-metadata-tag"})
+
+for tag in news_tags:
+    category = tag.get_text(strip=True)
+    card = tag.find_parent(["a", "div"], attrs={"data-testid": "internal-link"}) or tag.find_parent(
+        "div", class_=True
+    )
+
+    if not card:
+        continue
+
+    headline_el = card.find(["h1", "h2", "h3", "h4"], attrs={"data-testid": "card-headline"})
+    headline = headline_el.get_text(strip=True) if headline_el else "Headline not found"
+
+    link_el = card if card.name == "a" else card.find("a", href=True)
+    href = link_el.get("href") if link_el else None
     if not href:
         continue
 
-    full_link = urljoin("https://www.bbc.com", href)
+    full_link = href if href.startswith("http") else f"https://www.bbc.com{href}"
     if full_link in seen_links:
         continue
 
-    headline_parts = article_link.xpath(".//h2//text()")
-    headline = " ".join(part.strip() for part in headline_parts if part.strip())
-    if not headline:
-        headline = article_link.text_content().strip()
-    if not headline:
-        continue
-
     seen_links.add(full_link)
-    rows.append({"Headline": headline, "Link": full_link})
+    rows.append({"Headline": headline, "Category": category, "Link": full_link})
 
 with open("latest_news.csv", "w", newline="", encoding="utf-8") as csv_file:
-    writer = csv.DictWriter(csv_file, fieldnames=["Headline", "Link"])
+    writer = csv.DictWriter(csv_file, fieldnames=["Headline", "Category", "Link"])
     writer.writeheader()
     writer.writerows(rows)
 
