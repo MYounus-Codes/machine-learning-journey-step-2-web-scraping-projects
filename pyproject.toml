@@ -1,0 +1,11 @@
+[project]
+name = "web-scraping-projects"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "beautifulsoup4>=4.14.3",
+    "bs4>=0.0.2",
+    "requests>=2.34.2",
+]
