@@ -108,4 +108,3 @@ print('sample details:', mod.parse_job_details(jsoup, 'https://example.com/sampl
 If you want, I can add a short `CONTRIBUTING.md` or a test harness next — which would you prefer?
 
 ***
-Generated on 2026-05-23 — update this README as the project evolves.
