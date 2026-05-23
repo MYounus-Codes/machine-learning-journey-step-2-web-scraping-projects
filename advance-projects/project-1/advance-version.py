@@ -1,4 +1,7 @@
 import csv
+import json
+from html import unescape
+import re
 import time
 from pathlib import Path
 from urllib.parse import urljoin
@@ -43,48 +46,92 @@ def first_attr(soup: BeautifulSoup, selector: str, attribute: str) -> str:
 	return value
 
 
-def extract_job_details(session: requests.Session, job_url: str) -> dict[str, str]:
-	soup = fetch_soup(session, job_url)
-	details = soup.select_one("div#job-details")
+def parse_json_ld(soup: BeautifulSoup) -> list[dict]:
+	items = []
+	for script in soup.select('script[type="application/ld+json"]'):
+		if not script.string:
+			continue
+		try:
+			data = json.loads(script.string)
+		except json.JSONDecodeError:
+			continue
+		if isinstance(data, list):
+			items.extend(item for item in data if isinstance(item, dict))
+		elif isinstance(data, dict):
+			items.append(data)
+	return items
 
-	description_text = clean_text(details)
-	skill_items = []
-	if details:
-		skill_items = [clean_text(item) for item in details.select("li") if clean_text(item)]
+
+def job_posting_data(soup: BeautifulSoup) -> dict:
+	for item in parse_json_ld(soup):
+		if item.get("@type") == "JobPosting":
+			return item
+	return {}
+
+
+def extract_style_url(value: str) -> str:
+	match = re.search(r"url\(['\"]?(.*?)['\"]?\)", value or "")
+	return match.group(1) if match else ""
+
+
+def normalize_company_website(value) -> str:
+	if isinstance(value, list):
+		value = value[0] if value else ""
+	if not value:
+		return ""
+	website = str(value)
+	return "" if "weworkremotely.com" in website else website
+
+
+def extract_job_links(listing_soup: BeautifulSoup) -> list[str]:
+	job_links = []
+	seen_links = set()
+	for anchor in listing_soup.select("section.jobs a.listing-link--unlocked[href^='/remote-jobs/']"):
+		href = anchor.get("href")
+		if not href:
+			continue
+		job_url = urljoin(BASE_URL, href)
+		if job_url in seen_links:
+			continue
+		seen_links.add(job_url)
+		job_links.append(job_url)
+	return job_links
+
+
+def parse_job_details(soup: BeautifulSoup, job_url: str) -> dict[str, str]:
+	job_data = job_posting_data(soup)
+	company_data = job_data.get("hiringOrganization") if isinstance(job_data.get("hiringOrganization"), dict) else {}
+	description_html = soup.select_one(".lis-container__job__content__description")
+	skills = [clean_text(item) for item in soup.select(".lis-container__job__sidebar__job-about__list__item .boxes .box--multi.box--blue") if clean_text(item)]
+	company_logo_style = first_attr(soup, ".lis-container__header__hero__company-logo", "style")
+	company_logo = job_data.get("image", "") or extract_style_url(company_logo_style) or first_attr(soup, 'meta[property="og:image"]', "content")
+	company_website = normalize_company_website(company_data.get("sameAs", "") or company_data.get("url", "") or job_data.get("url", ""))
 
 	return {
 		"job_url": job_url,
-		"job_title": first_text(soup, "div.listing-header-container h1"),
-		"company_name": first_text(soup, ".lis-container__header__hero__company-info a"),
-		"company_website": first_attr(soup, ".lis-container__header__hero__company-info a", "href"),
-		"company_logo": first_attr(soup, ".lis-container__header__hero__company-logo img", "src"),
-		"post_date": first_attr(soup, "time", "datetime") or first_text(soup, "time"),
-		"job_type": first_text(soup, ".listing-tag"),
-		"category": first_text(soup, ".listing-header-container a[href*='/categories/']"),
-		"region": first_text(soup, ".listing-header-container .region") or first_text(soup, ".region"),
-		"job_description": description_text,
-		"skills": " | ".join(skill_items),
-		"apply_link": first_attr(soup, "#apply-button", "href"),
+		"job_title": unescape(str(job_data.get("title", "") or first_text(soup, ".lis-container__header__hero__company-info__title"))),
+		"company_name": str(company_data.get("name", "") or first_text(soup, ".lis-container__job__sidebar__companyDetails__info__title h3")),
+		"company_website": company_website,
+		"company_logo": str(company_logo),
+		"post_date": str(job_data.get("datePosted", "") or first_text(soup, ".lis-container__header__hero__company-info__icons__item span") or first_text(soup, ".lis-container__job__sidebar__job-about__list__item span")),
+		"job_type": str(job_data.get("employmentType", "") or first_text(soup, ".box--jobType")),
+		"category": str(job_data.get("occupationalCategory", "") or first_text(soup, ".lis-container__job__sidebar__job-about__list__item .box--blue")),
+		"region": first_text(soup, ".box--region"),
+		"job_description": clean_text(description_html),
+		"skills": " | ".join(skills),
+		"apply_link": first_attr(soup, "#job-cta-alt", "href") or first_attr(soup, "#apply-button", "href"),
 	}
+
+
+def extract_job_details(session: requests.Session, job_url: str) -> dict[str, str]:
+	soup = fetch_soup(session, job_url)
+	return parse_job_details(soup, job_url)
 
 
 def main() -> None:
 	session = requests.Session()
 	listing_soup = fetch_soup(session, LISTING_URL)
-
-	job_links = []
-	seen_links = set()
-	for anchor in listing_soup.select("section.jobs li > a"):
-		href = anchor.get("href")
-		if not href:
-			continue
-		job_url = urljoin(BASE_URL, href)
-		if "/remote-jobs/" not in job_url:
-			continue
-		if job_url in seen_links:
-			continue
-		seen_links.add(job_url)
-		job_links.append(job_url)
+	job_links = extract_job_links(listing_soup)
 
 	fieldnames = [
 		"job_url",
